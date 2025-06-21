@@ -8,50 +8,34 @@
         <div class="subtitle-2">{{ displayUsername }}</div>
       </v-toolbar>
 
-      <!-- Message Area -->
+      <!-- Messages -->
       <v-card-text class="chat-messages" ref="messageContainer">
         <div
-          v-for="(message, index) in messages"
-          :key="index"
-          :id="'msg-' + index"
-          :class="[
-            'chat-message',
-            isOwnMessage(message) ? 'own-message' : 'other-message',
-          ]"
+          v-for="message in messages"
+          :key="message.id"
+          :id="'msg-' + message.id"
+          :class="['chat-message', { 'own-message': isOwnMessage(message) }]"
         >
-          <div class="message-content">
-            <!-- Reply toggle button -->
-            <v-btn
-              icon
-              small
-              class="reply-btn"
-              @click="setReplyMessage(message)"
-              :title="'Reply to ' + message.user"
-            >
-              <v-icon small>mdi-reply</v-icon>
-            </v-btn>
+          <!-- Reply Preview -->
+          <div
+            v-if="message.replyTo"
+            class="reply-preview"
+            @click="scrollToRepliedMessage(message.replyTo)"
+          >
+            <small class="text-muted">↪ {{ message.replyTo.user }}:</small>
+            <div v-if="message.replyTo.text">{{ message.replyTo.text }}</div>
+            <audio
+              v-if="message.replyTo.audio"
+              :src="message.replyTo.audio"
+              controls
+              class="ml-2"
+            />
+          </div>
 
-            <!-- Replied message snippet inside message -->
-            <div
-              v-if="message.replyTo"
-              class="replied-message clickable"
-              @click="scrollToRepliedMessage(message.replyTo)"
-              :title="'Go to message by ' + message.replyTo.user"
-            >
-              <small
-                >↪ Reply to <strong>{{ message.replyTo.user }}</strong
-                >:</small
-              >
-              <div v-if="message.replyTo.text" class="reply-text">
-                {{ message.replyTo.text }}
-              </div>
-              <div v-else-if="message.replyTo.audio">🎙 Voice message</div>
-            </div>
-
-            <span class="font-weight-bold text--primary"
-              >{{ message.user }}:</span
-            >
-            <span class="ml-2" v-if="message.text">{{ message.text }}</span>
+          <!-- Main Message -->
+          <div @click="setReplyMessage(message)">
+            <strong>{{ message.user }}:</strong>
+            <span v-if="message.text"> {{ message.text }}</span>
             <audio
               v-if="message.audio"
               :src="message.audio"
@@ -59,25 +43,28 @@
               class="ml-2"
             />
           </div>
+
+          <!-- Delete Button -->
+          <v-btn
+            v-if="isOwnMessage(message)"
+            icon
+            small
+            color="red"
+            @click="confirmDelete(message.id)"
+          >
+            🗑
+          </v-btn>
         </div>
       </v-card-text>
 
-      <!-- Reply preview above input -->
-      <v-card-text v-if="replyMessage" class="reply-preview">
-        <v-chip close @click:close="clearReply">
-          Replying to <strong>{{ replyMessage.user }}</strong
-          >:
-          <span v-if="replyMessage.text"> {{ replyMessage.text }}</span>
-          <span v-else>🎙 Voice message</span>
-        </v-chip>
-      </v-card-text>
+      <!-- Reply Preview Input -->
+      <div v-if="replyMessage" class="reply-input">
+        <small>Replying to {{ replyMessage.user }}:</small>
+        <div>{{ replyMessage.text || "Voice message" }}</div>
+        <v-btn icon @click="clearReply">❌</v-btn>
+      </div>
 
-      <!-- Audio Preview -->
-      <v-card-text v-if="audioUrl" class="audio-preview">
-        <audio :src="audioUrl" controls></audio>
-      </v-card-text>
-
-      <!-- Inputs -->
+      <!-- Input Controls -->
       <v-card-actions class="pa-2">
         <v-text-field
           v-model="localUsername"
@@ -98,41 +85,14 @@
           @keyup.enter="sendMessage"
         />
 
-        <v-btn
-          color="red darken-1"
-          dark
-          @click="toggleRecording"
-          :loading="loading"
-        >
+        <v-btn color="red darken-1" dark @click="toggleRecording">
           {{ isRecording ? (isPaused ? "Resume" : "Pause") : "Record" }}
         </v-btn>
-
-        <v-btn
-          color="grey darken-1"
-          dark
-          @click="stopRecording"
-          :disabled="!isRecording"
+        <v-btn color="orange" dark @click="stopRecording">Stop</v-btn>
+        <v-btn color="green" dark @click="sendVoiceMessage">Send Voice</v-btn>
+        <v-btn color="deep-purple accent-4" dark @click="sendMessage"
+          >Send</v-btn
         >
-          Stop
-        </v-btn>
-
-        <v-btn
-          color="green darken-1"
-          dark
-          @click="sendVoiceMessage"
-          :disabled="!audioBlob"
-        >
-          Send Voice
-        </v-btn>
-
-        <v-btn
-          color="deep-purple accent-4"
-          dark
-          @click="sendMessage"
-          :disabled="!newMessage.trim()"
-        >
-          Send
-        </v-btn>
       </v-card-actions>
     </v-card>
   </v-container>
@@ -155,8 +115,7 @@ export default {
       audioChunks: [],
       audioBlob: null,
       audioUrl: null,
-      loading: false,
-      replyMessage: null, // Message object being replied to
+      replyMessage: null,
     };
   },
   computed: {
@@ -165,14 +124,18 @@ export default {
     },
   },
   mounted() {
+    this.socket.on("initMessages", (msgs) => {
+      this.messages = msgs;
+    });
     this.socket.on("chatMessage", (msg) => {
       this.messages.push(msg);
       this.$nextTick(() => {
         const container = this.$refs.messageContainer;
-        if (container) {
-          container.scrollTop = container.scrollHeight;
-        }
+        if (container) container.scrollTop = container.scrollHeight;
       });
+    });
+    this.socket.on("messageDeleted", (id) => {
+      this.messages = this.messages.filter((msg) => msg.id !== id);
     });
   },
   methods: {
@@ -185,7 +148,11 @@ export default {
     clearReply() {
       this.replyMessage = null;
     },
-
+    confirmDelete(id) {
+      if (confirm("Are you sure you want to delete this message?")) {
+        this.socket.emit("deleteMessage", id);
+      }
+    },
     sendMessage() {
       if (this.newMessage.trim() && this.localUsername.trim()) {
         const msg = {
@@ -204,7 +171,6 @@ export default {
         this.clearReply();
       }
     },
-
     async toggleRecording() {
       if (!this.isRecording) {
         try {
@@ -213,48 +179,27 @@ export default {
           });
           this.mediaRecorder = new MediaRecorder(stream);
           this.audioChunks = [];
-
           this.mediaRecorder.ondataavailable = (e) => {
-            if (e.data.size > 0) {
-              this.audioChunks.push(e.data);
-            }
+            if (e.data.size > 0) this.audioChunks.push(e.data);
           };
-
-          this.mediaRecorder.onpause = () => {
-            this.isPaused = true;
-          };
-
-          this.mediaRecorder.onresume = () => {
-            this.isPaused = false;
-          };
-
           this.mediaRecorder.start();
           this.isRecording = true;
           this.isPaused = false;
-          this.audioBlob = null;
-          if (this.audioUrl) {
-            URL.revokeObjectURL(this.audioUrl);
-            this.audioUrl = null;
-          }
         } catch (err) {
           console.error("Could not start recording:", err);
         }
       } else {
-        if (this.isPaused) {
-          this.mediaRecorder.resume();
-        } else {
-          this.mediaRecorder.pause();
-        }
+        this.isPaused
+          ? this.mediaRecorder.resume()
+          : this.mediaRecorder.pause();
+        this.isPaused = !this.isPaused;
       }
     },
-
     stopRecording() {
       if (this.mediaRecorder && this.isRecording) {
         this.mediaRecorder.onstop = () => {
           this.audioBlob = new Blob(this.audioChunks, { type: "audio/webm" });
-          if (this.audioUrl) {
-            URL.revokeObjectURL(this.audioUrl);
-          }
+          if (this.audioUrl) URL.revokeObjectURL(this.audioUrl);
           this.audioUrl = URL.createObjectURL(this.audioBlob);
         };
         this.mediaRecorder.stop();
@@ -262,7 +207,6 @@ export default {
         this.isPaused = false;
       }
     },
-
     sendVoiceMessage() {
       if (!this.audioBlob || !this.localUsername.trim()) return;
 
@@ -281,47 +225,32 @@ export default {
             : null,
         };
         this.socket.emit("chatMessage", msg);
-
-        // Cleanup
         this.audioBlob = null;
-        if (this.audioUrl) {
-          URL.revokeObjectURL(this.audioUrl);
-          this.audioUrl = null;
-        }
+        if (this.audioUrl) URL.revokeObjectURL(this.audioUrl);
+        this.audioUrl = null;
         this.clearReply();
       };
       reader.readAsDataURL(this.audioBlob);
     },
-
     scrollToRepliedMessage(replyTo) {
-      // Find the index of the message being replied to
-      const targetIndex = this.messages.findIndex((msg) => {
-        // Compare user + text + audio to identify the message uniquely
-        return (
-          msg.user === replyTo.user &&
-          ((msg.text && replyTo.text && msg.text === replyTo.text) ||
-            (msg.audio && replyTo.audio && msg.audio === replyTo.audio))
-        );
-      });
+      const id = this.messages.find((m) => {
+        if (!replyTo) return false;
+        if (m.user !== replyTo.user) return false;
+        if (replyTo.text && m.text === replyTo.text) return true;
+        if (replyTo.audio && m.audio === replyTo.audio) return true;
+        return false;
+      })?.id;
 
-      if (targetIndex !== -1) {
+      if (id) {
         const container = this.$refs.messageContainer;
-        const targetEl = document.getElementById("msg-" + targetIndex);
+        const targetEl = document.getElementById("msg-" + id);
         if (container && targetEl) {
-          // Smooth scroll so the message is visible near the top
-          const containerRect = container.getBoundingClientRect();
-          const targetRect = targetEl.getBoundingClientRect();
-          const offset =
-            targetRect.top - containerRect.top + container.scrollTop - 20; // 20px padding
           container.scrollTo({
-            top: offset,
+            top: targetEl.offsetTop - container.offsetTop,
             behavior: "smooth",
           });
-          // Optionally, highlight the target message briefly
           targetEl.classList.add("highlight");
-          setTimeout(() => {
-            targetEl.classList.remove("highlight");
-          }, 1500);
+          setTimeout(() => targetEl.classList.remove("highlight"), 1500);
         }
       }
     },
@@ -345,87 +274,40 @@ export default {
   border-bottom: 1px solid #ccc;
 }
 .chat-message {
-  margin-bottom: 8px;
-  word-wrap: break-word;
-  position: relative;
-  padding: 10px;
+  margin-bottom: 12px;
+  padding: 6px;
   border-radius: 8px;
-  max-width: 75%;
-  clear: both;
+  cursor: pointer;
+  transition: background-color 0.3s;
 }
-.chat-message.own-message {
-  background-color: #673ab7;
-  color: white;
-  margin-left: auto;
+.own-message {
   text-align: right;
+  background-color: #e3f2fd;
 }
-.chat-message.other-message {
-  background-color: #e0e0e0;
-  color: black;
-  margin-right: auto;
-  text-align: left;
-}
-.reply-btn {
-  position: absolute;
-  top: 4px;
-  left: 4px;
-  color: #3f51b5;
-  opacity: 0.7;
-  transition: opacity 0.2s;
-  z-index: 10;
-  cursor: pointer;
-}
-.own-message .reply-btn {
-  left: auto;
-  right: 4px;
-}
-.reply-btn:hover {
-  opacity: 1;
-}
-
-.replied-message {
-  background: rgba(255 255 255 / 0.3);
-  border-left: 3px solid #311b92;
-  margin-bottom: 6px;
-  padding-left: 6px;
-  font-size: 0.8em;
-  color: #311b92;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-
-.reply-text {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .reply-preview {
-  padding: 5px 10px;
-  border-left: 4px solid #673ab7;
-  background: #f3e5f5;
-  margin-bottom: 8px;
-  max-width: 90%;
+  background: #f0f0f0;
+  padding: 4px 6px;
+  border-left: 3px solid #ccc;
+  margin-bottom: 4px;
+  font-size: 0.85em;
 }
-
-.audio-preview {
-  padding: 10px;
-  background-color: #f0f0f0;
-  border-top: 1px solid #ccc;
-  border-bottom: 1px solid #ccc;
-  margin-bottom: 10px;
+.reply-input {
+  padding: 6px 10px;
+  background: #f9f9f9;
+  border-left: 3px solid #333;
+  margin: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
-
-/* Highlight effect when scrolling to replied message */
 .highlight {
-  animation: highlight-bg 1.5s ease forwards;
+  animation: highlight-glow 1.5s ease-out;
+  background-color: #ffeaa7;
+  border-radius: 5px;
 }
-
-@keyframes highlight-bg {
+@keyframes highlight-glow {
   0% {
-    background-color: yellow;
+    background-color: #ffeaa7;
   }
   100% {
     background-color: transparent;
